@@ -1,125 +1,45 @@
-import torch
+from codes.dataloader import load_my_data
+from codes.model import resnet18_revise_model
+from codes.test_model import test_my_model
+from codes.train_model import train_my_model
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
-from model import create_model
-from dataloader import get_caltech101_dataloaders
-import os
-import argparse
+import torch
 
-def train_fine_tune_model(data_path, save_path, lr=0.0001, num_epochs=200, batch_size=64):
-    # 设置设备
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # 创建数据加载器
-    train_loader, val_loader, _ = get_caltech101_dataloaders(data_path, batch_size)
-    
-    # 创建模型
-    model = create_model(num_classes=101, pretrained=True)
-    model = model.to(device)
-    
-    # 冻结除最后一层外的所有层
-    for param in model.parameters():
-        param.requires_grad = False
-    
-    # 只训练最后一层
-    model.fc.requires_grad = True
-    
-    # 定义损失函数和优化器
+def train_fintune_model(dataloaders, dataset_sizes, epoch=25, lr_fc=0.001, lr_pre=0.0001):
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    
-    # 创建TensorBoard写入器
-    writer = SummaryWriter()
-    
-    # 学习率调度器
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5)
-    
-    # 训练模型
-    best_val_acc = 0.0
-    
-    for epoch in range(num_epochs):
-        # 训练模式
-        model.train()
-        running_loss = 0.0
-        correct = 0
-        total = 0
-        
-        for inputs, labels in train_loader:
-            inputs = inputs.to(device)
-            labels = labels.to(device)
-            
-            optimizer.zero_grad()
-            
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            
-            running_loss += loss.item() * inputs.size(0)
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            correct += predicted.eq(labels).sum().item()
-        
-        train_loss = running_loss / len(train_loader.dataset)
-        train_acc = correct / total
-        
-        # 验证模式
-        model.eval()
-        val_loss = 0.0
-        val_correct = 0
-        val_total = 0
-        
-        with torch.no_grad():
-            for inputs, labels in val_loader:
-                inputs = inputs.to(device)
-                labels = labels.to(device)
-                
-                outputs = model(inputs)
-                loss = criterion(outputs, labels)
-                
-                val_loss += loss.item() * inputs.size(0)
-                _, predicted = outputs.max(1)
-                val_total += labels.size(0)
-                val_correct += predicted.eq(labels).sum().item()
-        
-        val_loss = val_loss / len(val_loader.dataset)
-        val_acc = val_correct / val_total
-        
-        # 记录到TensorBoard
-        writer.add_scalar('Loss/train', train_loss, epoch)
-        writer.add_scalar('Accuracy/train', train_acc, epoch)
-        writer.add_scalar('Loss/val', val_loss, epoch)
-        writer.add_scalar('Accuracy/val', val_acc, epoch)
-        
-        # 更新学习率调度器
-        scheduler.step(val_loss)
-        
-        # 打印训练信息
-        print(f'Epoch [{epoch+1}/{num_epochs}], '
-              f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, '
-              f'Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}')
-        
-        # 保存最佳模型
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            torch.save(model.state_dict(), os.path.join(save_path, 'best_model.pth'))
-    
-    # 关闭TensorBoard写入器
-    writer.close()
-    print(f'Best Validation Accuracy: {best_val_acc:.4f}')
-    
-    # 保存最终模型
-    torch.save(model.state_dict(), os.path.join(save_path, 'final_model.pth'))
+    device = "cuda"
+    model = resnet18_revise_model(pretrained=True)
+    model = model.to(device)
+    fc_params_id = list(map(id, model.fc.parameters()))     # 返回的是parameters的内存地址
+    base_params = filter(lambda p: id(p) not in fc_params_id, model.parameters())
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Caltech-101 Fine-tuning')
-    parser.add_argument('--data_path', type=str, required=True, help='Path to Caltech-101 dataset')
-    parser.add_argument('--save_path', type=str, default='./models', help='Path to save models')
-    parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
-    parser.add_argument('--epochs', type=int, default=200, help='Number of epochs')
-    parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
+    # 采用不同学习率设置
+    optimizer = optim.SGD([
+        {'params': base_params, 'lr': lr_pre},   
+        {'params': model.fc.parameters(), 'lr': lr_fc}], momentum=0.9)
+
+    model = train_my_model(model, criterion, optimizer, dataloaders, dataset_sizes, epoch)
     
-    args = parser.parse_args()
+    return model
+
+if __name__ == "__main__":
+    my_dataloaders, my_datasizes = load_my_data("./CUB_200_2011/CUB_200_2011/CUB_200_2011/images")
     
-    train_fine_tune_model(args.data_path, args.save_path, args.lr, args.epochs, args.batch_size)
+    # 参数搜索
+    lr_fc = [0.001, 0.005, 0.0005]
+    lr_pre = [0.0001, 0.0005, 0.00005]
+    epochs = [50]
+
+    for lr in lr_fc:
+        for lre in lr_pre:
+            for epoch in epochs:
+                    model_finetuned, bs_epoch = train_fintune_model(my_dataloaders, my_datasizes, epoch=epoch, lr_fc=lr, lr_pre=lre)
+                    torch.save(model_finetuned.state_dict(), f'./task1_output/resnet18_finetuned_{epoch}_{lr}_{lre}.pth')
+                    test_accuracy = test_my_model(my_dataloaders, f'./task1_output/resnet18_finetuned_{epoch}_{lr}_{lre}.pth')
+                    # 记录测试结果
+                    with open("fintuned_model_test_result.txt", "a+", encoding="utf-8") as f:
+                        f.write(f"参数：{lr}，{lre}，最佳epoch：{bs_epoch+1}。测试集上accuracy为：{test_accuracy}")
+                        f.write("\n")
+
+

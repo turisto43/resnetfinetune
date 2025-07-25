@@ -1,12 +1,19 @@
 import torch
+import torch
+import torch.nn as nn
+import os
 import torchvision.models as models
 
-def create_model(num_classes=101, pretrained=True):
-    # 使用ResNet-18架构
-    model = models.resnet18(pretrained=pretrained)
-    
-    # 修改最后一层全连接层
-    num_ftrs = model.fc.in_features
-    model.fc = torch.nn.Linear(num_ftrs, num_classes)
-    
+from torchvision.models import resnet18, ResNet18_Weights
+
+def resnet18_revise_model(pretrained=True):
+    if pretrained:
+        model = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+    else:
+        model = models.resnet18()
+
+    num_features = model.fc.in_features
+    model.fc = nn.Linear(num_features, 101)
+
+
     return model
